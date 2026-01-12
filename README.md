@@ -3,7 +3,7 @@
 **From Interlocking Theory to Modbus MITM Detection in Microsoft
 Sentinel**
 
-![](./image1.png){width="3.1666666666666665in" height="1.725in"}
+![](./image1.png)
 
 **1. What is Operational Technology (OT)?**
 
@@ -103,11 +103,9 @@ environment, including control logic (PLC), supervisory control
 The goal is to show how cyber actions translate into physical
 consequences.
 
-![](./image2.png){width="6.268055555555556in"
-height="3.9715277777777778in"}
+![](./image2.png)
 
-![](./image3.png){width="6.083333333333333in"
-height="2.588953412073491in"}
+![](./image3.png)
 
 **Components:**
 
@@ -253,11 +251,9 @@ This lab simulates a **real railway control system** and shows how
 **cyber attacks against OT networks** can cause **real physical
 accidents**, and how a **SOC can detect them using Microsoft Sentinel**.
 
-![](./image4.png){width="6.266666666666667in"
-height="3.3666666666666667in"}
+![](./image4.png)
 
-![](./image5.png){width="6.266666666666667in"
-height="3.4166666666666665in"}
+![](./image5.png)
 
 **13. Lab Objective**
 
