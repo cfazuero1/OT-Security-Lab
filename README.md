@@ -103,8 +103,6 @@ environment, including control logic (PLC), supervisory control
 The goal is to show how cyber actions translate into physical
 consequences.
 
-![](./image2.png)
-
 ![](./image3.png)
 
 **Components:**
