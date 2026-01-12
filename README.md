@@ -632,6 +632,7 @@ Unsafe control actions occur without immediate alerting.
 -   Overall Risk: **High**
 
 **4. Risk Summary Table**
+![](./image9.png)
 
   ---------------------------------------------------------------------------
   **Risk**                     **Likelihood**      **Impact**   **Overall**
