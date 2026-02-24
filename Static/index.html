@@ -1,0 +1,710 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Rail OT Digital Twin - Pro Edition</title>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+  <style>
+    html, body { margin:0; height:100%; overflow:hidden; background:#121212; }
+    #hud {
+      position:absolute; top:15px; left:15px;
+      background:rgba(0,0,0,0.78);
+      color:#00ffcc;
+      padding:12px 14px;
+      border-radius:8px;
+      border-left:4px solid #00ffcc;
+      font-family:Consolas, monospace;
+      font-size:12px;
+      min-width:340px;
+      pointer-events:none;
+      z-index:100;
+      line-height:1.35;
+    }
+    #hud small { color:#aaa; display:block; margin-top:6px; }
+  </style>
+</head>
+<body>
+  <div id="hud">SYSTEM INITIALIZING...</div>
+
+  <script type="module">
+    import * as THREE from "three";
+    import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+
+    /* =====================================================
+       SIM COORDINATES (PYGAME SPACE)
+       ===================================================== */
+    const SIM_W = 1040, SIM_H = 540;
+    const TRACK_Y_MAIN   = 360;
+    const TRACK_Y_SIDING = 445;
+
+    const MAIN_X0 = 150, MAIN_X1 = 890;
+    const SIDING_X0 = 270, SIDING_X1 = 520;
+    const JUNCTION_X = 520;
+
+    const A_X = 310, B_X = 520, C_X = 730;
+
+    /* Align A-light with S-light */
+    const SIG_ALIGN_X = Math.round((A_X + B_X) / 2); // 415
+    const SIG_BC_X    = Math.round((B_X + C_X) / 2); // 625
+
+    /* =====================================================
+       WORLD MAPPING (FIXED AXES)
+       X = east/west
+       Y = up
+       Z = north/south
+       ===================================================== */
+    const X0 = SIM_W / 2;
+    const Y0 = SIM_H / 2;
+    const SCALE = 2.0;
+
+    function map2D(px, py, height=0) {
+      return new THREE.Vector3(
+        (px - X0) * SCALE,
+        height,
+        (Y0 - py) * SCALE
+      );
+    }
+
+    // --- helpers for join yaw blending ---
+    function clamp01(v){ return Math.max(0, Math.min(1, v)); }
+    function smoothstep(a,b,x){
+      const t = clamp01((x-a)/(b-a));
+      return t*t*(3 - 2*t);
+    }
+
+    /* =====================================================
+       SCENE SETUP
+       ===================================================== */
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x87cfe8);
+    scene.fog = new THREE.FogExp2(0x4a6b4a, 0.00033);
+
+    const camera = new THREE.PerspectiveCamera(50, innerWidth/innerHeight, 1, 20000);
+    camera.position.set(0, 900, 1200);
+
+    const renderer = new THREE.WebGLRenderer({ antialias:true });
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.shadowMap.enabled = true;
+    document.body.appendChild(renderer.domElement);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.target.set(0, 0, 0);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.08;
+    controls.update();
+
+    scene.add(new THREE.AmbientLight(0xffffff, 0.70));
+    const sun = new THREE.DirectionalLight(0xffffff, 1.15);
+    sun.position.set(700, 1200, 900);
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(2048,2048);
+    scene.add(sun);
+
+    /* =====================================================
+       GROUND (HORIZONTAL)
+       ===================================================== */
+    const ground = new THREE.Mesh(
+      new THREE.PlaneGeometry(15000, 15000),
+      new THREE.MeshStandardMaterial({ color:0x223322, roughness:1.0 })
+    );
+    ground.rotation.x = -Math.PI/2;
+    ground.receiveShadow = true;
+    scene.add(ground);
+
+    /* =====================================================
+       TREES (UPRIGHT)
+       ===================================================== */
+    const trunkGeo = new THREE.CylinderGeometry(5, 7, 50, 8);
+    const trunkMat = new THREE.MeshStandardMaterial({ color:0x3d2b1f, roughness:1.0 });
+    const leafGeo  = new THREE.ConeGeometry(40, 130, 8);
+    const leafMat  = new THREE.MeshStandardMaterial({ color:0x1a331a, roughness:1.0 });
+
+    function addTree(x,z,s=1){
+      const trunk = new THREE.Mesh(trunkGeo, trunkMat);
+
+      // Put the bottom of the trunk on the ground (y=0) for any scale
+      // trunkGeo height = 50 (so half is 25); use actual geometry height rather than an arbitrary number
+      trunk.scale.setScalar(s);
+      const trunkHalf = (50 * s) / 2;
+      const GROUND_EPS = 3; // small burial to remove visible gap
+      trunk.position.set(x, trunkHalf - GROUND_EPS, z);
+
+      trunk.castShadow = true;
+
+      const leaves = new THREE.Mesh(leafGeo, leafMat);
+      // leafGeo height = 130; position so the cone sits atop the trunk
+      leaves.scale.setScalar(s);
+      leaves.position.set(0, trunkHalf + (130*s)/2 + 10*s, 0);
+      leaves.castShadow = true;
+
+      trunk.add(leaves);
+      scene.add(trunk);
+    }
+
+    for(let i=0;i<420;i++){
+      const x = (Math.random()-0.5)*8000;
+      const z = (Math.random()-0.5)*8000;
+      if(Math.abs(z)<620 && Math.abs(x)<2400) continue; // keep track area clearer
+      addTree(x,z,0.8+Math.random()*0.6);
+    }
+
+    /* =====================================================
+       TRACK SYSTEM
+       ===================================================== */
+    const railMat = new THREE.MeshStandardMaterial({ color:0x9aa0a8, metalness:0.82, roughness:0.25 });
+    const sleeperMat = new THREE.MeshStandardMaterial({ color:0x4a3324, roughness:0.9 });
+    const ballastMat = new THREE.MeshStandardMaterial({ color:0x2a2a2a, roughness:1.0 });
+
+    function drawTrack(points, railOffset = 22){
+      for(let i=0;i<points.length-1;i++){
+        const p1 = map2D(points[i].x, points[i].y, 0);
+        const p2 = map2D(points[i+1].x, points[i+1].y, 0);
+        const dir = p2.clone().sub(p1);
+        const len = dir.length();
+        const ang = Math.atan2(dir.z, dir.x);
+        const mid = p1.clone().add(p2).multiplyScalar(0.5);
+
+        // Ballast bed
+        const ballast = new THREE.Mesh(new THREE.BoxGeometry(len, 10, 90), ballastMat);
+        ballast.position.copy(mid);
+        ballast.rotation.y = -ang;
+        ballast.receiveShadow = true;
+        scene.add(ballast);
+
+        // Sleepers
+        const step = 45;
+        const dirN = dir.clone().normalize();
+        for(let d=0; d<=len; d+=step){
+          const s = new THREE.Mesh(new THREE.BoxGeometry(14, 8, 78), sleeperMat);
+          s.position.copy(p1.clone().add(dirN.clone().multiplyScalar(d)));
+          s.rotation.y = -ang;
+          s.position.y = 6;
+          s.castShadow = true;
+          s.receiveShadow = true;
+          scene.add(s);
+        }
+
+        // Rails
+        const off = railOffset;
+        for (const sgn of [1,-1]) {
+          const r = new THREE.Mesh(new THREE.BoxGeometry(len, 8, 8), railMat);
+          r.position.copy(mid);
+          r.position.x += Math.sin(ang)*off*sgn;
+          r.position.z += Math.cos(ang)*off*sgn;
+          r.position.y = 18;
+          r.rotation.y = -ang;
+          r.castShadow = true;
+          r.receiveShadow = true;
+          scene.add(r);
+        }
+      }
+    }
+
+    // Main line, siding, and turnout connector
+    drawTrack([{x:MAIN_X0,y:TRACK_Y_MAIN},{x:MAIN_X1,y:TRACK_Y_MAIN}], 22);
+
+    const SIDING_TRIM = 80; // pixels to shorten (try 40–120)
+    drawTrack([
+      {x: SIDING_X0, y: TRACK_Y_SIDING},
+      {x: SIDING_X1 - SIDING_TRIM, y: TRACK_Y_SIDING}
+    ], 22);
+
+    const JOIN_BACK = 90; // try 40..90
+    drawTrack([
+      {x: JUNCTION_X - JOIN_BACK,         y: TRACK_Y_SIDING},
+      {x: (JUNCTION_X + 80) - JOIN_BACK,  y: TRACK_Y_MAIN}
+    ], 12);
+
+    // Join yaw zone (SIM space) derived from your join geometry above
+    const JOIN_LEN = 80;
+    const JOIN_X0 = (JUNCTION_X - JOIN_BACK);
+    const JOIN_X1 = (JUNCTION_X + JOIN_LEN - JOIN_BACK);
+
+    /* =====================================================
+       STATION SIGN TEXTURE
+       ===================================================== */
+    function makeLabelTexture(text, bg="#0b0d11", fg="#ffffff"){
+      const c = document.createElement("canvas");
+      c.width = 256; c.height = 128;
+      const ctx = c.getContext("2d");
+
+      ctx.fillStyle = bg;
+      ctx.fillRect(0,0,c.width,c.height);
+
+      ctx.strokeStyle = "rgba(255,255,255,0.25)";
+      ctx.lineWidth = 10;
+      ctx.strokeRect(12,12,c.width-24,c.height-24);
+
+      ctx.fillStyle = fg;
+      ctx.font = "bold 92px Arial";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(text, c.width/2, c.height/2 + 6);
+
+      const tex = new THREE.CanvasTexture(c);
+      tex.anisotropy = renderer.capabilities.getMaxAnisotropy?.() || 1;
+      tex.needsUpdate = true;
+      return tex;
+    }
+
+    /* =====================================================
+       STATIONS A / B / C
+       (Moved to sit on T1's rail line)
+       ===================================================== */
+    function createStation(label, x, y, side=0){
+      const g = new THREE.Group();
+
+      const plat = new THREE.Mesh(
+        new THREE.BoxGeometry(190, 10, 52),
+        new THREE.MeshStandardMaterial({ color: 0x2b2f36, roughness: 0.95 })
+      );
+      plat.position.y = 5;
+      plat.receiveShadow = true;
+      g.add(plat);
+
+      // canopy
+      const canopy = new THREE.Mesh(
+        new THREE.BoxGeometry(135, 6, 34),
+        new THREE.MeshStandardMaterial({ color: 0x3b4250, roughness: 0.85 })
+      );
+      canopy.position.set(-18, 44, 0);
+      canopy.castShadow = true;
+      g.add(canopy);
+
+      // posts
+      const postMat = new THREE.MeshStandardMaterial({ color: 0x6a7385, roughness: 0.85 });
+      const postGeo = new THREE.CylinderGeometry(2.8,2.8,36,10);
+      for (const px of [-62, -18, 26]){
+        const p = new THREE.Mesh(postGeo, postMat);
+        p.position.set(px, 24, 0);
+        p.castShadow = true;
+        g.add(p);
+      }
+
+      // Big sign (A/B/C)
+      const signPost = new THREE.Mesh(
+        new THREE.CylinderGeometry(2.2,2.2,44,10),
+        new THREE.MeshStandardMaterial({ color: 0x1c1f26, roughness: 0.8 })
+      );
+      signPost.position.set(92, 22, 0);
+      g.add(signPost);
+
+      const signPlane = new THREE.Mesh(
+        new THREE.PlaneGeometry(54, 28),
+        new THREE.MeshStandardMaterial({
+          map: makeLabelTexture(label),
+          roughness: 0.6,
+          metalness: 0.05
+        })
+      );
+      signPlane.position.set(92, 50, 0);
+      signPlane.rotation.y = Math.PI;
+      g.add(signPlane);
+
+      // Lamps
+      function lamp(lx){
+        const pole = new THREE.Mesh(
+          new THREE.CylinderGeometry(2,2,28,10),
+          new THREE.MeshStandardMaterial({ color: 0x20242c })
+        );
+        pole.position.set(lx, 18, 20);
+        g.add(pole);
+
+        const bulb = new THREE.Mesh(
+          new THREE.SphereGeometry(4.2, 14, 14),
+          new THREE.MeshStandardMaterial({ color: 0xfff0c8, emissive: 0xffd68a, emissiveIntensity: 1.0 })
+        );
+        bulb.position.set(lx, 34, 20);
+        g.add(bulb);
+
+        const light = new THREE.PointLight(0xffe2b0, 0.5, 260);
+        light.position.copy(bulb.position);
+        g.add(light);
+      }
+      lamp(-45);
+      lamp( 10);
+
+      // Place ON the same rail line as T1, with tiny Z offset to avoid clipping
+      g.position.copy(map2D(x, y, 0));
+      g.position.z += 22; // small offset, still "on" the rail line visually
+
+      g.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; }});
+      scene.add(g);
+      return g;
+    }
+
+    createStation("A", A_X, TRACK_Y_MAIN);
+    createStation("B", B_X, TRACK_Y_MAIN);
+    createStation("C", C_X, TRACK_Y_MAIN);
+
+    /* =====================================================
+       PRETTY TRAINS (LOCO ONLY — WAGON REMOVED)
+       ===================================================== */
+    function createTrain(primary, accent){
+      const g = new THREE.Group();
+
+      const bodyMat   = new THREE.MeshStandardMaterial({ color: primary, metalness: 0.25, roughness: 0.35 });
+      const darkMat   = new THREE.MeshStandardMaterial({ color: 0x121418, metalness: 0.10, roughness: 0.80 });
+      const glassMat  = new THREE.MeshStandardMaterial({ color: 0xaad7ff, roughness: 0.15, transparent:true, opacity: 0.75 });
+      const accentMat = new THREE.MeshStandardMaterial({ color: accent, emissive: accent, emissiveIntensity: 0.12, roughness: 0.45 });
+
+      const wheelGeo = new THREE.CylinderGeometry(7.5, 7.5, 6, 18);
+      const wheelMat = new THREE.MeshStandardMaterial({ color: 0x0a0c10, roughness: 0.85 });
+
+      const loco = new THREE.Group();
+
+      const chassis = new THREE.Mesh(new THREE.BoxGeometry(165, 20, 56), darkMat);
+      chassis.position.y = 10;
+      loco.add(chassis);
+
+      const body = new THREE.Mesh(new THREE.BoxGeometry(155, 34, 50), bodyMat);
+      body.position.y = 30;
+      loco.add(body);
+
+      const nose = new THREE.Mesh(new THREE.BoxGeometry(30, 30, 48), bodyMat);
+      nose.position.set(88, 27, 0);
+      loco.add(nose);
+
+      const cab = new THREE.Mesh(new THREE.BoxGeometry(52, 28, 50), darkMat);
+      cab.position.set(34, 50, 0);
+      loco.add(cab);
+
+      const win = new THREE.Mesh(new THREE.BoxGeometry(10, 10, 38), glassMat);
+      win.position.set(52, 52, 0);
+      loco.add(win);
+
+      const stripe = new THREE.Mesh(new THREE.BoxGeometry(155, 4, 52), accentMat);
+      stripe.position.set(0, 32, 0);
+      loco.add(stripe);
+
+      function bogie(parent, x){
+        const frame = new THREE.Mesh(new THREE.BoxGeometry(46, 10, 46), darkMat);
+        frame.position.set(x, 8, 0);
+        parent.add(frame);
+
+        const zOff = 20;
+        for (const sx of [-14, 14]) {
+          for (const sz of [-zOff, zOff]) {
+            const w = new THREE.Mesh(wheelGeo, wheelMat);
+            w.rotation.z = Math.PI/2;
+            w.position.set(x+sx, 7, sz);
+            parent.add(w);
+          }
+        }
+      }
+      bogie(loco, -45);
+      bogie(loco,  58);
+
+      const head = new THREE.Mesh(
+        new THREE.SphereGeometry(5.8, 18, 18),
+        new THREE.MeshStandardMaterial({ color: 0xfff3cf, emissive: 0xffd68a, emissiveIntensity: 1.2 })
+      );
+      head.position.set(98, 28, 0);
+      loco.add(head);
+
+      const headLight = new THREE.PointLight(0xffe2b0, 0.6, 320);
+      headLight.position.copy(head.position);
+      loco.add(headLight);
+
+      g.add(loco);
+
+      g.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; }});
+      scene.add(g);
+      return g;
+    }
+
+    const t1 = createTrain(0x1d4ed8, 0x38bdf8);
+    const t2 = createTrain(0xf59e0b, 0xfde68a);
+
+    let t1T = map2D(A_X, TRACK_Y_MAIN, 0);
+    let t2T = map2D(SIDING_X0, TRACK_Y_SIDING, 0);
+
+    /* =====================================================
+       SIGNALS
+       ===================================================== */
+    const signalMeshes = {};
+    function createSignal(id,x,y,side){
+      const g = new THREE.Group();
+
+      const mast = new THREE.Mesh(
+        new THREE.CylinderGeometry(3,3,110,12),
+        new THREE.MeshStandardMaterial({ color:0x111 })
+      );
+      mast.position.y = 55;
+      mast.castShadow = true;
+      g.add(mast);
+
+      const box = new THREE.Mesh(
+        new THREE.BoxGeometry(22, 18, 22),
+        new THREE.MeshStandardMaterial({ color: 0x0b0d11 })
+      );
+      box.position.set(0, 110, 0);
+      g.add(box);
+
+      const lamp = new THREE.Mesh(
+        new THREE.SphereGeometry(9,14,14),
+        new THREE.MeshBasicMaterial({ color:0xff0000 })
+      );
+      lamp.position.set(10, 110, 0);
+      g.add(lamp);
+
+      g.position.copy(map2D(x,y,0));
+      g.position.z += side * 70;
+
+      scene.add(g);
+      signalMeshes[id] = lamp;
+    }
+
+    createSignal("ab", SIG_ALIGN_X, TRACK_Y_MAIN, -1);
+    createSignal("bc", SIG_BC_X,    TRACK_Y_MAIN, -1);
+    createSignal("sb", SIG_ALIGN_X, TRACK_Y_SIDING, +1);
+
+    /* =====================================================
+       T2 VISUAL TURN + JOIN 45° (INTEGRATED)
+       ===================================================== */
+    let t2TurnVis = null; // {startT, dur, from, to}
+    let lastT2Loc = null;
+
+    let t2BaseYaw = 0;
+    let t2YawExtra = 0;
+    let t2RollExtra = 0;
+
+    // store latest T2 sim coords for join detection
+    let lastT2SimX = SIDING_X0;
+    let lastT2SimY = TRACK_Y_SIDING;
+
+    /* =====================================================
+       EXPLOSION (ONLY ADDITION)
+       ===================================================== */
+    let lastCrash = 0;
+    const activeExplosions = [];
+
+    function spawnExplosion(worldPos){
+      const g = new THREE.Group();
+      g.position.copy(worldPos);
+
+      // Flash shell
+      const flashMat = new THREE.MeshBasicMaterial({ color: 0xffffcc, transparent: true, opacity: 1.0 });
+      const flash = new THREE.Mesh(new THREE.SphereGeometry(26, 18, 18), flashMat);
+      g.add(flash);
+
+      // Fireball
+      const fireMat = new THREE.MeshStandardMaterial({
+        color: 0xff5a00,
+        emissive: 0xff2200,
+        emissiveIntensity: 2.2,
+        roughness: 0.35,
+        metalness: 0.05,
+        transparent: true,
+        opacity: 0.95
+      });
+      const fire = new THREE.Mesh(new THREE.SphereGeometry(18, 28, 28), fireMat);
+      g.add(fire);
+
+      // Sparks (cheap particles)
+      const sparkCount = 26;
+      const sparks = [];
+      const sparkGeo = new THREE.SphereGeometry(2.2, 10, 10);
+      const sparkMat = new THREE.MeshStandardMaterial({ color: 0xffcc66, emissive: 0xff9900, emissiveIntensity: 1.2 });
+
+      for(let i=0;i<sparkCount;i++){
+        const s = new THREE.Mesh(sparkGeo, sparkMat);
+        s.position.set(0,0,0);
+        g.add(s);
+        sparks.push({
+          mesh: s,
+          vel: new THREE.Vector3(
+            (Math.random()-0.5)*260,
+            140 + Math.random()*240,
+            (Math.random()-0.5)*260
+          )
+        });
+      }
+
+      // Light burst
+      const light = new THREE.PointLight(0xffb36b, 4.2, 1400);
+      light.position.set(0, 30, 0);
+      g.add(light);
+
+      scene.add(g);
+
+      activeExplosions.push({
+        group: g,
+        flash, fire, light, sparks,
+        start: performance.now(),
+        dur: 420
+      });
+    }
+
+    function updateExplosions(){
+      if(activeExplosions.length === 0) return;
+
+      const now = performance.now();
+      for(let i=activeExplosions.length-1; i>=0; i--){
+        const e = activeExplosions[i];
+        const t = (now - e.start) / e.dur;
+        if(t >= 1){
+          scene.remove(e.group);
+          activeExplosions.splice(i,1);
+          continue;
+        }
+
+        // Fast big expansion + quick fade
+        const s = 1 + t*7.5;
+        e.group.scale.setScalar(s);
+
+        e.flash.material.opacity = Math.max(0, 1 - t*2.4);
+        e.fire.material.opacity  = Math.max(0, 1 - t*1.6);
+        e.light.intensity = Math.max(0, 4.2 * (1 - t*1.8));
+
+        // Sparks ballistic (simple)
+        const dt = 1/60;
+        for(const sp of e.sparks){
+          sp.vel.y -= 420 * dt; // gravity
+          sp.mesh.position.x += sp.vel.x * dt;
+          sp.mesh.position.y += sp.vel.y * dt;
+          sp.mesh.position.z += sp.vel.z * dt;
+        }
+      }
+    }
+
+    /* =====================================================
+       WEBSOCKET & ANIMATION
+       ===================================================== */
+    const hud = document.getElementById("hud");
+    const ws = new WebSocket((location.protocol==="https:"?"wss://":"ws://")+location.host+"/ws");
+    let msgCount = 0;
+
+    ws.onopen = () => {
+      hud.innerHTML = "LIVE TELEMETRY CONNECTED<small>Orbit: mouse drag | Zoom: scroll</small>";
+    };
+
+    ws.onmessage = (e) => {
+      const s = JSON.parse(e.data);
+      if(!s.trains) return;
+      msgCount++;
+
+      // targets (always mimic sim)
+      t1T = map2D(s.trains.T1.x, s.trains.T1.y, 0);
+      t2T = map2D(s.trains.T2.x, s.trains.T2.y, 0);
+
+      // store sim coords for join detection (INTEGRATED)
+      lastT2SimX = s.trains.T2.x;
+      lastT2SimY = s.trains.T2.y;
+
+      // base facing direction from sim
+      t1.rotation.y = s.trains.T1.dir_right ? 0 : Math.PI;
+      t2BaseYaw = s.trains.T2.dir_right ? 0 : Math.PI;
+
+      // signals
+      if(s.signals){
+        signalMeshes.ab.material.color.setHex(s.signals.ab ? 0x00ff00 : 0xff0000);
+        signalMeshes.bc.material.color.setHex(s.signals.bc ? 0x00ff00 : 0xff0000);
+        signalMeshes.sb.material.color.setHex(s.signals.sb ? 0x00ff00 : 0xff0000);
+      }
+
+      // Visual-only "curve" on S <-> B transition (do not override sim path)
+      if (lastT2Loc && s.trains.T2.loc !== lastT2Loc) {
+        const from = lastT2Loc;
+        const to   = s.trains.T2.loc;
+        const isSB = (from === "S" && to === "B") || (from === "B" && to === "S");
+        if (isSB) {
+          t2TurnVis = { startT: performance.now(), dur: 700, from, to };
+        }
+      }
+      lastT2Loc = s.trains.T2.loc;
+
+      /* ---- EXPLOSION TRIGGER (ONLY ADDITION) ----
+         Fire once when crash flips 0 -> 1
+      */
+      if (s.crash === 1 && lastCrash === 0) {
+        const mid = t1.position.clone().add(t2.position).multiplyScalar(0.5);
+        mid.y = 28; // lift it a bit above rails
+        spawnExplosion(mid);
+      }
+      lastCrash = s.crash;
+
+      // HUD
+      hud.innerHTML =
+        `LIVE TELEMETRY<br>` +
+        `msgs=${msgCount} mode=${s.mode} comms=${s.comms} estop=${s.estop} crash=${s.crash}<br>` +
+        `T1 loc=${s.trains.T1.loc} (${s.trains.T1.x.toFixed(1)},${s.trains.T1.y.toFixed(1)})<br>` +
+        `T2 loc=${s.trains.T2.loc} (${s.trains.T2.x.toFixed(1)},${s.trains.T2.y.toFixed(1)})` +
+        `<small>Orbit: mouse drag | Zoom: scroll</small>`;
+    };
+
+    function animate(){
+      requestAnimationFrame(animate);
+
+      // Smooth train motion (always follows sim coords)
+      t1.position.lerp(t1T, 0.12);
+      t2.position.lerp(t2T, 0.12);
+
+      // reset extras each frame (then compute if turning)
+      t2YawExtra = 0;
+      t2RollExtra = 0;
+
+      // --- join-zone 45° yaw (dominant while inside join) ---
+      // x blend in/out
+      const xBlendIn  = smoothstep(JOIN_X0 - 12, JOIN_X0 + 12, lastT2SimX);
+      const xBlendOut = 1 - smoothstep(JOIN_X1 - 12, JOIN_X1 + 12, lastT2SimX);
+      const xBlend = clamp01(xBlendIn * xBlendOut);
+
+      // y corridor: only consider between main and siding
+      const yMin = TRACK_Y_MAIN, yMax = TRACK_Y_SIDING;
+      const yBlend = smoothstep(yMin, yMax, lastT2SimY);
+      const inYBand = (yBlend > 0.05 && yBlend < 0.95) ? 1 : 0;
+
+      const joinFactor = clamp01(xBlend * inYBand);
+
+      if (joinFactor > 0) {
+        const TURN_45 = Math.PI / 4;
+
+        // sign based on whether we're closer to siding or main (S->B vs B->S)
+        const midY = (TRACK_Y_MAIN + TRACK_Y_SIDING) / 2;
+        const sign = (lastT2SimY > midY) ? +1 : -1;
+
+        // blend in/out smoothly
+        t2YawExtra  += sign * TURN_45 * joinFactor;
+        t2RollExtra += (-sign) * 0.10 * joinFactor;
+      } else if (t2TurnVis) {
+        // fallback: your existing visual curve wobble when NOT in join
+        const tt = Math.min(1, (performance.now() - t2TurnVis.startT) / t2TurnVis.dur);
+        const ease = Math.sin(tt * Math.PI);
+
+        const yawOffset = ease * 0.55;
+        const lean      = ease * 0.12;
+
+        t2YawExtra  = (t2TurnVis.from === "S") ?  yawOffset : -yawOffset;
+        t2RollExtra = (t2TurnVis.from === "S") ? -lean      :  lean;
+
+        if (tt >= 1) t2TurnVis = null;
+      }
+
+      // Apply FINAL rotation (no accumulation)
+      t2.rotation.y = t2BaseYaw + t2YawExtra;
+      t2.rotation.z = t2RollExtra;
+
+      // EXPLOSION UPDATE (ONLY ADDITION)
+      updateExplosions();
+
+      controls.update();
+      renderer.render(scene, camera);
+    }
+    animate();
+
+    addEventListener("resize",()=>{
+      camera.aspect = innerWidth/innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(innerWidth, innerHeight);
+    });
+  </script>
+</body>
+</html>

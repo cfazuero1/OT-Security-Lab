@@ -1,0 +1,2 @@
+Optional: Place a GLTF/GLB train model here named 'train.glb'. The viewer will load it automatically.
+If missing, it uses the built-in procedural train.
