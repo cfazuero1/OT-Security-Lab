@@ -255,6 +255,8 @@ accidents**, and how a **SOC can detect them using Microsoft Sentinel**.
 
 ![](./image5.png)
 
+![](./railway.png)
+
 **13. Lab Objective**
 
 This lab demonstrates **realistic ICS attack detection** using Microsoft
